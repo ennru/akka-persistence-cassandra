@@ -7,22 +7,16 @@ object Dependencies {
   val ScalaVersions = Seq(Scala212, Scala213)
 
   val AkkaVersion = "2.5.23"
+  val CassandraDriverVersion = "4.0.1"
   val CassandraVersionInDocs = "4.0"
 
   val akkaCassandraSessionDependencies = Seq(
-    "com.datastax.cassandra" % "cassandra-driver-core" % "3.7.1",
+    "com.datastax.oss" % "java-driver-core-shaded" % CassandraDriverVersion,
     "com.typesafe.akka" %% "akka-stream" % AkkaVersion,
     "com.typesafe.akka" %% "akka-stream-testkit" % AkkaVersion % Test)
 
   val akkaPersistenceCassandraDependencies = Seq(
-    "com.datastax.cassandra" % "cassandra-driver-core" % "3.7.1",
-    // Specifying guava dependency because older transitive dependency has security vulnerability
-    "com.google.guava" % "guava" % "27.0.1-jre",
-    // Specifying jnr-posix version for licensing reasons: cassandra-driver-core
-    // depends on version 3.0.44, but for this version the LICENSE.txt and the
-    // pom.xml have conflicting licensing information. 3.0.45 fixes this and
-    // makes it clear this library is available under (among others) the EPL
-    "com.github.jnr" % "jnr-posix" % "3.0.45",
+//    "com.datastax.oss" % "java-driver-query-builder" % CassandraDriverVersion exclude ("com.datastax.oss", "java-driver-core"),
     "com.typesafe.akka" %% "akka-persistence" % AkkaVersion,
     "com.typesafe.akka" %% "akka-cluster-tools" % AkkaVersion,
     "com.typesafe.akka" %% "akka-persistence-query" % AkkaVersion,

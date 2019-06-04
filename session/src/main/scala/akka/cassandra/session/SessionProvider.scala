@@ -5,7 +5,7 @@
 package akka.cassandra.session
 
 import akka.actor.{ ActorSystem, ExtendedActorSystem }
-import com.datastax.driver.core.Session
+import com.datastax.oss.driver.api.core.CqlSession
 import com.typesafe.config.Config
 
 import scala.collection.immutable
@@ -25,7 +25,7 @@ import scala.util.Failure
  */
 trait SessionProvider {
 
-  def connect()(implicit ec: ExecutionContext): Future[Session]
+  def connect()(implicit ec: ExecutionContext): Future[CqlSession]
 
 }
 
