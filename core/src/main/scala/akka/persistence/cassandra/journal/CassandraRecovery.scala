@@ -124,7 +124,7 @@ trait CassandraRecovery extends CassandraTagRecovery with TaggedPreparedStatemen
           t.tagged match {
             case OptionVal.Some(tpr) =>
               sendMissingTagWrite(tp, tagWrites.get)(tpr)
-            case OptionVal.None => FutureDone // no tags, skip
+            case OptionVal.None => CassandraStatements.FutureDone // no tags, skip
           }
         }
         .runWith(Sink.ignore)
@@ -134,7 +134,7 @@ trait CassandraRecovery extends CassandraTagRecovery with TaggedPreparedStatemen
         pid,
         minProgressNr,
         fromSequenceNr)
-      FutureDone
+      CassandraStatements.FutureDone
     }
   }
 

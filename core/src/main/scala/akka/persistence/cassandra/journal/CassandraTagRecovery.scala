@@ -38,7 +38,7 @@ trait CassandraTagRecovery {
       implicit ec: ExecutionContext): Future[Map[Tag, TagProgress]] =
     preparedSelectTagProgressForPersistenceId
       .map(_.bind(persistenceId))
-      .flatMap(session.selectResultSet)
+      .flatMap(session.selectSyncResultSet)
       .map(rs =>
         rs.all().asScala.foldLeft(Map.empty[String, TagProgress]) { (acc, row) =>
           acc + (row.getString("tag") -> TagProgress(

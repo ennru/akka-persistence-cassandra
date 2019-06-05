@@ -4,48 +4,40 @@
 
 package akka.persistence.cassandra.journal
 
-import scala.collection.immutable
-import java.lang.{ Integer => JInt, Long => JLong }
+import java.lang.{Integer => JInt, Long => JLong}
 import java.net.URLEncoder
 import java.util.UUID
 
 import akka.Done
 import akka.actor.SupervisorStrategy.Escalate
-import akka.pattern.ask
-import akka.pattern.pipe
-import akka.actor.Actor
-import akka.actor.ActorLogging
-import akka.actor.ActorRef
-import akka.actor.NoSerializationVerificationNeeded
-import akka.actor.OneForOneStrategy
-import akka.actor.Props
-import akka.actor.SupervisorStrategy
-import akka.actor.Timers
+import akka.actor.{Actor, ActorLogging, ActorRef, NoSerializationVerificationNeeded, OneForOneStrategy, Props, SupervisorStrategy, Timers}
 import akka.annotation.InternalApi
+import akka.pattern.{ask, pipe}
 import akka.persistence.cassandra.journal.CassandraJournal._
 import akka.persistence.cassandra.journal.TagWriter._
 import akka.persistence.cassandra.journal.TagWriters._
-import akka.util.Timeout
-import com.datastax.driver.core.{ BatchStatement, PreparedStatement, ResultSet, Statement }
+import akka.util.{ByteString, Timeout}
+import com.datastax.oss.driver.api.core.cql.{AsyncResultSet, PreparedStatement, Statement}
+import com.datastax.oss.driver.internal.core.cql.DefaultBatchStatement
+import com.datastax.oss.protocol.internal.ProtocolConstants.BatchType
 
-import scala.concurrent.{ ExecutionContext, Future }
+import scala.collection.immutable
 import scala.concurrent.duration._
-import scala.util.Failure
-import scala.util.Success
-import akka.util.ByteString
+import scala.concurrent.{ExecutionContext, Future}
+import scala.util.{Failure, Success}
 
 @InternalApi private[akka] object TagWriters {
 
   private[akka] case class TagWritersSession(
       tagWritePs: () => Future[PreparedStatement],
       tagWriteWithMetaPs: () => Future[PreparedStatement],
-      executeStatement: Statement => Future[Done],
-      selectStatement: Statement => Future[ResultSet],
+      executeStatement: Statement[_ <: Statement[_]] => Future[Done],
+      selectStatement: Statement[_ <: Statement[_]] => Future[AsyncResultSet],
       tagProgressPs: () => Future[PreparedStatement],
       tagScanningPs: () => Future[PreparedStatement]) {
 
     def writeBatch(tag: Tag, events: Seq[(Serialized, Long)])(implicit ec: ExecutionContext): Future[Done] = {
-      val batch = new BatchStatement(BatchStatement.Type.UNLOGGED)
+      val batch = new DefaultBatchStatement(BatchType.UNLOGGED)
       val tagWritePSs = for {
         withMeta <- tagWriteWithMetaPs()
         withoutMeta <- tagWritePs()
@@ -70,7 +62,7 @@ import akka.util.ByteString
                   event.serManifest,
                   event.writerUuid)
                 event.meta.foreach { m =>
-                  bound.setBytes("meta", m.serialized)
+                  bound.setByteBuffer("meta", m.serialized)
                   bound.setString("meta_ser_manifest", m.serManifest)
                   bound.setInt("meta_ser_id", m.serId)
                 }
@@ -295,7 +287,7 @@ import akka.util.ByteString
         val startTime = System.nanoTime()
 
         def writeTagScanningBatch(group: Seq[(String, Long)]): Future[Done] = {
-          val batch = new BatchStatement(BatchStatement.Type.UNLOGGED)
+          val batch = new DefaultBatchStatement(BatchType.UNLOGGED)
           group.foreach {
             case (pid, seqNr) => batch.add(ps.bind(pid, seqNr: JLong))
           }

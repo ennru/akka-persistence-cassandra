@@ -4,14 +4,21 @@
 
 package akka.persistence.cassandra.journal
 
-import akka.Done
-import akka.cassandra.session.scaladsl.CassandraSession
-import com.datastax.driver.core.Session
+import java.util.concurrent.atomic.AtomicReference
 
-import scala.concurrent.{ ExecutionContext, Future }
+import akka.Done
+import akka.annotation.InternalApi
+import akka.cassandra.session.scaladsl.CassandraSession
+
+import scala.concurrent.{ ExecutionContext, Future, Promise }
 import akka.persistence.cassandra.indent
+import com.datastax.oss.driver.api.core.CqlSession
+
+import scala.compat.java8.FutureConverters._
 
 trait CassandraStatements {
+  import CassandraStatements.FutureDone
+
   private[akka] def config: CassandraJournalConfig
 
   private[akka] def createKeyspace =
@@ -296,7 +303,7 @@ trait CassandraStatements {
    * Those statements are retried, because that could happen across different
    * nodes also but serializing those statements gives a better "experience".
    */
-  private[akka] def executeCreateKeyspaceAndTables(session: Session, config: CassandraJournalConfig)(
+  private[akka] def executeCreateKeyspaceAndTables(session: CqlSession, config: CassandraJournalConfig)(
       implicit ec: ExecutionContext): Future[Done] = {
     import akka.cassandra.session._
 
@@ -305,29 +312,56 @@ trait CassandraStatements {
       def tagStatements: Future[Done] =
         if (config.eventsByTagEnabled) {
           for {
-            _ <- session.executeAsync(createTagsTable).asScala
-            _ <- session.executeAsync(createTagsProgressTable).asScala
-            _ <- session.executeAsync(createTagScanningTable).asScala
+            _ <- session.executeAsync(createTagsTable).toScala
+            _ <- session.executeAsync(createTagsProgressTable).toScala
+            _ <- session.executeAsync(createTagScanningTable).toScala
           } yield Done
         } else FutureDone
 
       val keyspace: Future[Done] =
         if (config.keyspaceAutoCreate)
-          session.executeAsync(createKeyspace).asScala.map(_ => Done)
-        else Future.successful(Done)
+          session.executeAsync(createKeyspace).toScala.map(_ => Done)
+        else FutureDone
 
       if (config.tablesAutoCreate) {
         for {
           _ <- keyspace
-          _ <- session.executeAsync(createTable).asScala
-          _ <- session.executeAsync(createMetadataTable).asScala
+          _ <- session.executeAsync(createTable).toScala
+          _ <- session.executeAsync(createMetadataTable).toScala
           done <- tagStatements
         } yield done
       } else keyspace
     }
 
-    CassandraSession.serializedExecution(
+    CassandraStatements.serializedExecution(
       recur = () => executeCreateKeyspaceAndTables(session, config),
       exec = () => create())
   }
+}
+
+/**
+ * INTERNAL API
+ */
+@InternalApi private[akka] final object CassandraStatements {
+  final val FutureDone: Future[Done] = Future.successful(Done)
+
+  private val serializedExecutionProgress =
+    new AtomicReference[Future[Done]](FutureDone)
+
+  def serializedExecution(recur: () => Future[Done], exec: () => Future[Done])(
+      implicit ec: ExecutionContext): Future[Done] = {
+    val progress = serializedExecutionProgress.get
+    val p = Promise[Done]()
+    progress.onComplete { _ =>
+      val result =
+        if (serializedExecutionProgress.compareAndSet(progress, p.future))
+          exec()
+        else
+          recur()
+      p.completeWith(result)
+      result
+    }
+    p.future
+  }
+
 }

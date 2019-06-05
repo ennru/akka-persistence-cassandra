@@ -14,3 +14,9 @@ https://github.com/datastax/java-driver/tree/4.x/manual/osgi
 You might be tempted to open a separate session for each keyspace used in your application; however, connection pools are created at the session level, so each new session will consume additional system resources:
 https://github.com/datastax/java-driver/tree/4.x/manual/core#cqlsession
 
+
+
+https://github.com/datastax/java-driver/tree/4.x/manual/core/configuration
+
+Reference conf
+https://github.com/datastax/java-driver/tree/4.x/manual/core/configuration/reference

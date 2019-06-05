@@ -7,17 +7,18 @@ package akka.persistence.cassandra.query
 import scala.concurrent.Future
 import scala.concurrent.duration.FiniteDuration
 import akka.actor.Props
-import com.datastax.driver.core.{ PreparedStatement, ResultSet, Row, Session }
 import akka.persistence.cassandra.query.AllPersistenceIdsPublisher._
 import akka.persistence.cassandra.query.QueryActorPublisher._
 import akka.actor.NoSerializationVerificationNeeded
 import akka.annotation.InternalApi
+import com.datastax.oss.driver.api.core.CqlSession
+import com.datastax.oss.driver.api.core.cql.{PreparedStatement, ResultSet, Row}
 
 /**
  * INTERNAL API
  */
 @InternalApi private[akka] object AllPersistenceIdsPublisher {
-  final case class AllPersistenceIdsSession(selectDistinctPersistenceIds: PreparedStatement, session: Session)
+  final case class AllPersistenceIdsSession(selectDistinctPersistenceIds: PreparedStatement, session: CqlSession)
       extends NoSerializationVerificationNeeded
   final case class ReplayDone(resultSet: Option[ResultSet]) extends NoSerializationVerificationNeeded
   final case class AllPersistenceIdsState(knownPersistenceIds: Set[String])

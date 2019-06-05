@@ -9,25 +9,28 @@ import java.util.concurrent.ThreadLocalRandom
 
 import akka.annotation.InternalApi
 import akka.persistence.cassandra._
-import akka.persistence.cassandra.journal.{ BucketSize, TimeBucket }
+import akka.persistence.cassandra.journal.{BucketSize, TimeBucket}
 import akka.persistence.cassandra.query.EventsByTagStage._
-import akka.stream.stage.{ GraphStage, _ }
-import akka.stream.{ ActorMaterializer, Attributes, Outlet, SourceShape }
+import akka.stream.stage.{GraphStage, _}
+import akka.stream.{ActorMaterializer, Attributes, Outlet, SourceShape}
 import akka.cassandra.session._
 import akka.util.PrettyDuration._
 
 import scala.annotation.tailrec
 import scala.concurrent.duration.Duration
 import scala.concurrent.duration._
-import scala.concurrent.{ ExecutionContext, ExecutionContextExecutor, Future }
-import scala.util.{ Failure, Success, Try }
-import java.lang.{ Long => JLong }
+import scala.concurrent.{ExecutionContext, ExecutionContextExecutor, Future}
+import scala.util.{Failure, Success, Try}
+import java.lang.{Long => JLong}
 
-import akka.cluster.pubsub.{ DistributedPubSub, DistributedPubSubMediator }
+import akka.cluster.pubsub.{DistributedPubSub, DistributedPubSubMediator}
 import akka.persistence.cassandra.journal.CassandraJournal._
 import akka.persistence.cassandra.query.scaladsl.CassandraReadJournal.EventByTagStatements
-import com.datastax.driver.core.{ ResultSet, Row, Session }
-import com.datastax.driver.core.utils.UUIDs
+import com.datastax.oss.driver.api.core.CqlSession
+import com.datastax.oss.driver.api.core.cql.{AsyncResultSet, Row}
+import com.datastax.oss.driver.api.core.uuid.Uuids
+
+import scala.compat.java8.FutureConverters._
 
 /**
  * Walks the tag_views table.
@@ -77,27 +80,28 @@ import com.datastax.driver.core.utils.UUIDs
 
   private[akka] class TagStageSession(
       val tag: String,
-      session: Session,
+      session: CqlSession,
       statements: EventByTagStatements,
       fetchSize: Int) {
     def selectEventsForBucket(bucket: TimeBucket, from: UUID, to: UUID)(
-        implicit ec: ExecutionContext): Future[ResultSet] = {
+        implicit ec: ExecutionContext): Future[AsyncResultSet] = {
       val bound =
-        statements.byTagWithUpperLimit.bind(tag, bucket.key: JLong, from, to).setFetchSize(fetchSize)
+        statements.byTagWithUpperLimit.bind(tag, bucket.key: JLong, from, to)
+          //.setFetchSize(fetchSize)
 
-      session.executeAsync(bound).asScala
+      session.executeAsync(bound).toScala
     }
   }
 
   private[akka] object TagStageSession {
-    def apply(tag: String, session: Session, statements: EventByTagStatements, fetchSize: Int): TagStageSession =
+    def apply(tag: String, session: CqlSession, statements: EventByTagStatements, fetchSize: Int): TagStageSession =
       new TagStageSession(tag, session, statements, fetchSize)
   }
 
   private sealed trait QueryState
   private case object QueryIdle extends QueryState
   private final case class QueryInProgress(startTime: Long = System.nanoTime()) extends QueryState
-  private final case class QueryResult(resultSet: ResultSet) extends QueryState
+  private final case class QueryResult(resultSet: AsyncResultSet) extends QueryState
   private final case class BufferedEvents(events: List[UUIDRow]) extends QueryState
 
   private final case class LookingForMissing(
@@ -182,7 +186,7 @@ import com.datastax.driver.core.utils.UUIDs
 
       var stageState: StageState = _
       val toOffsetMillis =
-        toOffset.map(UUIDs.unixTimestamp).getOrElse(Long.MaxValue)
+        toOffset.map(Uuids.unixTimestamp).getOrElse(Long.MaxValue)
 
       lazy val system = materializer match {
         case a: ActorMaterializer => a.system
@@ -191,10 +195,10 @@ import com.datastax.driver.core.utils.UUIDs
       }
 
       private def calculateToOffset(): UUID = {
-        val to: Long = UUIDs.unixTimestamp(UUIDs.timeBased()) - settings.eventsByTagEventualConsistency.toMillis
+        val to: Long = Uuids.unixTimestamp(Uuids.timeBased()) - settings.eventsByTagEventualConsistency.toMillis
         val tOff = if (to < toOffsetMillis) {
           // The eventual consistency delay is before the end of the query
-          val u = UUIDs.endOf(to)
+          val u = Uuids.endOf(to)
           if (log.isDebugEnabled) {
             log.debug("{}: New toOffset (EC): {}", stageUuid, formatOffset(u))
           }
@@ -219,7 +223,7 @@ import com.datastax.driver.core.utils.UUIDs
 
       setHandler(out, this)
 
-      val newResultSetCb = getAsyncCallback[Try[ResultSet]] {
+      val newResultSetCb = getAsyncCallback[Try[AsyncResultSet]] {
         case Success(rs) =>
           if (!stageState.state.isInstanceOf[QueryInProgress]) {
             throw new IllegalStateException(s"New ResultSet when in unexpected state ${stageState.state}")
@@ -356,7 +360,7 @@ import com.datastax.driver.core.utils.UUIDs
         }
       }
 
-      def checkResultSetForMissing(rs: ResultSet, m: LookingForMissing): Unit = {
+      def checkResultSetForMissing(rs: AsyncResultSet, m: LookingForMissing): Unit = {
         val row = rs.one()
         // we only extract the event if it is the missing one we've looking for
         val rowPersistenceId = row.getString("persistence_id")
@@ -423,7 +427,7 @@ import com.datastax.driver.core.utils.UUIDs
               settings.eventsByTagNewPersistenceIdScanTimeout.pretty)
           }
           val previousBucketStart =
-            UUIDs.startOf(stageState.currentTimeBucket.previous(1).key)
+            Uuids.startOf(stageState.currentTimeBucket.previous(1).key)
           val startingOffset: UUID =
             if (UUIDComparator.comparator.compare(previousBucketStart, fromOffset) < 0) {
               log.debug("[{}] Starting at fromOffset", stageUuid)
@@ -626,9 +630,9 @@ import com.datastax.driver.core.utils.UUIDs
             .tagPidSequenceNumberUpdate(m.persistenceId, (m.maxSequenceNr, m.maxOffset)))
       }
 
-      private def fetchMore(rs: ResultSet): Unit = {
+      private def fetchMore(rs: AsyncResultSet): Unit = {
         log.debug("[{}] No more results without paging. Requesting more.", stageUuid)
-        val moreResults: Future[ResultSet] = rs.fetchMoreResults().asScala
+        val moreResults: Future[AsyncResultSet] = rs.fetchNextPage().toScala
         updateQueryState(QueryInProgress())
         moreResults.onComplete(newResultSetCb.invoke)
       }
@@ -637,12 +641,12 @@ import com.datastax.driver.core.utils.UUIDs
         UUIDRow(
           persistenceId = row.getString("persistence_id"),
           sequenceNr = row.getLong("sequence_nr"),
-          offset = row.getUUID("timestamp"),
+          offset = row.getUuid("timestamp"),
           tagPidSequenceNr = row.getLong("tag_pid_sequence_nr"),
           row)
 
       private def nextTimeBucket(): Unit = {
-        updateStageState(_.copy(fromOffset = UUIDs.startOf(stageState.currentTimeBucket.next().key)))
+        updateStageState(_.copy(fromOffset = Uuids.startOf(stageState.currentTimeBucket.next().key)))
         updateToOffset()
       }
     }

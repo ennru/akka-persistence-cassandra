@@ -4,7 +4,7 @@
 
 package akka.persistence.cassandra.query
 
-import java.lang.{ Long => JLong }
+import java.lang.{Long => JLong}
 import java.nio.ByteBuffer
 import java.util.UUID
 import java.util.concurrent.ThreadLocalRandom
@@ -12,20 +12,24 @@ import java.util.concurrent.ThreadLocalRandom
 import akka.Done
 import akka.annotation.InternalApi
 import akka.persistence.PersistentRepr
-import akka.persistence.cassandra.journal.CassandraJournal.{ EventDeserializer, Serialized }
+import akka.persistence.cassandra.journal.CassandraJournal.{EventDeserializer, Serialized}
 import akka.serialization.Serialization
-import akka.stream.{ Attributes, Outlet, SourceShape }
+import akka.stream.{Attributes, Outlet, SourceShape}
 import akka.cassandra.session._
 import akka.stream.stage._
-import com.datastax.driver.core._
-import com.datastax.driver.core.policies.RetryPolicy
-import com.datastax.driver.core.utils.Bytes
+
 import scala.annotation.tailrec
 import scala.collection.JavaConverters._
-import scala.concurrent.{ ExecutionContext, Future, Promise }
-import scala.concurrent.duration.{ FiniteDuration, _ }
-import scala.util.{ Failure, Success, Try }
+import scala.concurrent.{ExecutionContext, Future, Promise}
+import scala.concurrent.duration.{FiniteDuration, _}
+import scala.util.{Failure, Success, Try}
 import akka.util.OptionVal
+import com.datastax.oss.driver.api.core.{ConsistencyLevel, CqlSession}
+import com.datastax.oss.driver.api.core.cql.{AsyncResultSet, BoundStatement, PreparedStatement, ResultSet, Row}
+import com.datastax.oss.driver.api.core.retry.RetryPolicy
+import com.datastax.oss.protocol.internal.util.Bytes
+
+import scala.compat.java8.FutureConverters._
 
 /**
  * INTERNAL API
@@ -66,7 +70,7 @@ import akka.util.OptionVal
   final case class EventsByPersistenceIdSession(
       selectEventsByPersistenceIdQuery: PreparedStatement,
       selectDeletedToQuery: PreparedStatement,
-      session: Session,
+      session: CqlSession,
       customConsistencyLevel: Option[ConsistencyLevel],
       customRetryPolicy: Option[RetryPolicy]) {
 
@@ -75,10 +79,10 @@ import akka.util.OptionVal
         partitionNr: Long,
         progress: Long,
         toSeqNr: Long,
-        fetchSize: Int)(implicit ec: ExecutionContext): Future[ResultSet] = {
+        fetchSize: Int)(implicit ec: ExecutionContext): Future[AsyncResultSet] = {
       val boundStatement =
         selectEventsByPersistenceIdQuery.bind(persistenceId, partitionNr: JLong, progress: JLong, toSeqNr: JLong)
-      boundStatement.setFetchSize(fetchSize)
+//      boundStatement.setFetchSize(fetchSize)
       executeStatement(boundStatement)
     }
 
@@ -86,13 +90,15 @@ import akka.util.OptionVal
       executeStatement(selectDeletedToQuery.bind(persistenceId)).map(r =>
         Option(r.one()).map(_.getLong("deleted_to")).getOrElse(0))
 
-    private def executeStatement(statement: Statement)(implicit ec: ExecutionContext): Future[ResultSet] =
-      session.executeAsync(withCustom(statement)).asScala
+    private def executeStatement(statement: BoundStatement)(implicit ec: ExecutionContext): Future[AsyncResultSet] =
+      session.executeAsync(withCustom(statement)).toScala
 
-    private def withCustom(statement: Statement): Statement = {
-      customConsistencyLevel.foreach(statement.setConsistencyLevel)
-      customRetryPolicy.foreach(statement.setRetryPolicy)
-      statement
+    private def withCustom(statement: BoundStatement): BoundStatement = {
+      customConsistencyLevel match {
+        case Some(cl) => statement.setConsistencyLevel(cl)
+        case None => statement
+      }
+//      customRetryPolicy.foreach(statement.setRetryPolicy)
     }
   }
 
@@ -133,7 +139,7 @@ import akka.util.OptionVal
         override def extract(row: Row, async: Boolean)(implicit ec: ExecutionContext): Future[TaggedPersistentRepr] =
           extractPersistentRepr(row, ed, s, async).map { persistentRepr =>
             val tags = extractTags(row, ed)
-            TaggedPersistentRepr(persistentRepr, tags, row.getUUID("timestamp"))
+            TaggedPersistentRepr(persistentRepr, tags, row.getUuid("timestamp"))
           }
       }
 
@@ -147,7 +153,7 @@ import akka.util.OptionVal
             Future.successful(OptionalTagged(seqNr, OptionVal.None))
           } else {
             extractPersistentRepr(row, ed, s, async).map { persistentRepr =>
-              val tagged = TaggedPersistentRepr(persistentRepr, tags, row.getUUID("timestamp"))
+              val tagged = TaggedPersistentRepr(persistentRepr, tags, row.getUuid("timestamp"))
               OptionalTagged(seqNr, OptionVal.Some(tagged))
             }
           }
@@ -163,7 +169,7 @@ import akka.util.OptionVal
 
     private def extractPersistentRepr(row: Row, ed: EventDeserializer, s: Serialization, async: Boolean)(
         implicit ec: ExecutionContext): Future[PersistentRepr] =
-      row.getBytes("message") match {
+      row.getByteBuffer("message") match {
         case null =>
           ed.deserializeEvent(row, async).map { payload =>
             PersistentRepr(

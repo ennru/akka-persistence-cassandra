@@ -13,7 +13,6 @@ import akka.actor._
 import akka.pattern.pipe
 import akka.stream.actor.ActorPublisher
 import akka.stream.actor.ActorPublisherMessage.{ Cancel, Request, SubscriptionTimeoutExceeded }
-import com.datastax.driver.core.{ ResultSet, Row }
 import akka.cassandra.session._
 import akka.persistence.cassandra.query.QueryActorPublisher._
 

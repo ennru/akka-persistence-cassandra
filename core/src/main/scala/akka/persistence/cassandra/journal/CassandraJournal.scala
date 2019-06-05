@@ -4,9 +4,9 @@
 
 package akka.persistence.cassandra.journal
 
-import java.lang.{ Long => JLong }
+import java.lang.{Long => JLong}
 import java.nio.ByteBuffer
-import java.util.{ UUID, HashMap => JHMap, Map => JMap }
+import java.util.{UUID, HashMap => JHMap, Map => JMap}
 
 import akka.Done
 import akka.actor.SupervisorStrategy.Stop
@@ -17,35 +17,39 @@ import akka.actor.ExtendedActorSystem
 import akka.actor.NoSerializationVerificationNeeded
 import akka.actor.OneForOneStrategy
 import akka.actor.SupervisorStrategy
-import akka.annotation.{ DoNotInherit, InternalApi }
+import akka.annotation.{DoNotInherit, InternalApi}
 import akka.cassandra.session.scaladsl.CassandraSession
-import akka.event.{ Logging, LoggingAdapter }
+import akka.event.{Logging, LoggingAdapter}
 import akka.persistence._
 import akka.persistence.cassandra.EventWithMetaData.UnknownMetaData
 import akka.persistence.cassandra._
-import akka.persistence.cassandra.journal.TagWriters.{ BulkTagWrite, TagWrite, TagWritersSession }
+import akka.persistence.cassandra.journal.TagWriters.{BulkTagWrite, TagWrite, TagWritersSession}
 import akka.persistence.cassandra.query.EventsByPersistenceIdStage.Extractors
 import akka.persistence.cassandra.query.scaladsl.CassandraReadJournal
-import akka.persistence.journal.{ AsyncWriteJournal, Tagged }
+import akka.persistence.journal.{AsyncWriteJournal, Tagged}
 import akka.persistence.query.PersistenceQuery
-import akka.serialization.{ AsyncSerializer, Serialization, SerializationExtension }
+import akka.serialization.{AsyncSerializer, Serialization, SerializationExtension}
 import akka.stream.ActorMaterializer
 import akka.stream.scaladsl.Sink
 import akka.util.OptionVal
-import com.datastax.driver.core._
-import com.datastax.driver.core.exceptions.DriverException
-import com.datastax.driver.core.policies.RetryPolicy.RetryDecision
-import com.datastax.driver.core.policies.{ LoggingRetryPolicy, RetryPolicy }
-import com.datastax.driver.core.utils.{ Bytes, UUIDs }
 import com.typesafe.config.Config
 import akka.cassandra.session._
+import com.datastax.oss.driver.api.core.{ConsistencyLevel, CqlSession, DriverException}
+import com.datastax.oss.driver.api.core.cql.{AsyncResultSet, BatchStatement, BoundStatement, PreparedStatement, Row, Statement}
+import com.datastax.oss.driver.api.core.retry.{RetryDecision, RetryPolicy}
+import com.datastax.oss.driver.api.core.servererrors.{CoordinatorException, WriteType}
+import com.datastax.oss.driver.api.core.session.Request
+import com.datastax.oss.driver.api.core.uuid.Uuids
+import com.datastax.oss.driver.internal.core.cql.DefaultBatchStatement
+import com.datastax.oss.protocol.internal.util.Bytes
 
 import scala.collection.JavaConverters._
 import scala.collection.immutable
 import scala.collection.immutable.Seq
 import scala.concurrent._
 import scala.util.control.NonFatal
-import scala.util.{ Failure, Success, Try }
+import scala.util.{Failure, Success, Try}
+import scala.compat.java8.FutureConverters._
 
 /**
  * Journal implementation of the cassandra plugin.
@@ -74,7 +78,7 @@ class CassandraJournal(cfg: Config)
     }
   }
 
-  private lazy val deleteRetryPolicy = new LoggingRetryPolicy(new FixedRetryPolicy(config.deleteRetries))
+  private lazy val deleteRetryPolicy: RetryPolicy = new FixedRetryPolicy(config.deleteRetries)
 
   import CassandraJournal._
   import config._
@@ -99,7 +103,7 @@ class CassandraJournal(cfg: Config)
     context.dispatcher,
     log,
     metricsCategory = s"${self.path.name}",
-    init = (session: Session) => executeCreateKeyspaceAndTables(session, config))
+    init = (session: CqlSession) => executeCreateKeyspaceAndTables(session, config))
 
   private val tagWriterSession = TagWritersSession(
     () => preparedWriteToTagViewWithoutMeta,
@@ -118,45 +122,47 @@ class CassandraJournal(cfg: Config)
     else None
 
   def preparedWriteMessage =
-    session.prepare(writeMessage(withMeta = false)).map(_.setIdempotent(true))
+    session.prepare(writeMessage(withMeta = false)) //.map(_.setIdempotent(true))
   def preparedSelectDeletedTo: Option[Future[PreparedStatement]] = {
     if (config.supportDeletes)
       Some(
-        session
-          .prepare(selectDeletedTo)
-          .map(_.setConsistencyLevel(config.readConsistency).setIdempotent(true).setRetryPolicy(readRetryPolicy)))
+        session.prepare(selectDeletedTo)
+        //.map(_.setConsistencyLevel(config.readConsistency).setIdempotent(true).setRetryPolicy(readRetryPolicy))
+      )
     else
       None
   }
   def preparedSelectHighestSequenceNr =
-    session
-      .prepare(selectHighestSequenceNr)
-      .map(_.setConsistencyLevel(config.readConsistency).setIdempotent(true).setRetryPolicy(readRetryPolicy))
+    session.prepare(selectHighestSequenceNr)
+  //.map(_.setConsistencyLevel(config.readConsistency).setIdempotent(true).setRetryPolicy(readRetryPolicy))
 
   private def deletesNotSupportedException: Future[PreparedStatement] =
     Future.failed(new IllegalArgumentException(s"Deletes not supported because config support-deletes=off"))
 
   def preparedInsertDeletedTo: Future[PreparedStatement] = {
     if (config.supportDeletes)
-      session.prepare(insertDeletedTo).map(_.setConsistencyLevel(config.writeConsistency).setIdempotent(true))
+      session.prepare(insertDeletedTo)
+    //.map(_.setConsistencyLevel(config.writeConsistency).setIdempotent(true))
     else
       deletesNotSupportedException
   }
   def preparedDeleteMessages: Future[PreparedStatement] = {
     if (config.supportDeletes)
-      session.prepare(deleteMessages).map(_.setIdempotent(true))
+      session.prepare(deleteMessages)
+    //.map(_.setIdempotent(true))
     else
       deletesNotSupportedException
   }
 
   def preparedWriteMessageWithMeta =
-    session.prepare(writeMessage(withMeta = true)).map(_.setIdempotent(true))
+    session.prepare(writeMessage(withMeta = true))
+  //.map(_.setIdempotent(true))
   def preparedSelectMessages =
-    session
-      .prepare(selectMessages)
-      .map(_.setConsistencyLevel(readConsistency).setIdempotent(true).setRetryPolicy(readRetryPolicy))
+    session.prepare(selectMessages)
+//      .map(_.setConsistencyLevel(readConsistency).setIdempotent(true).setRetryPolicy(readRetryPolicy))
   def preparedWriteInUse =
-    session.prepare(writeInUse).map(_.setIdempotent(true))
+    session.prepare(writeInUse)
+//      .map(_.setIdempotent(true))
 
   implicit val materializer: ActorMaterializer =
     ActorMaterializer()(context.system)
@@ -220,8 +226,8 @@ class CassandraJournal(cfg: Config)
       }
   }
 
-  private[akka] val writeRetryPolicy = new LoggingRetryPolicy(new FixedRetryPolicy(config.writeRetries))
-  private[akka] val readRetryPolicy = new LoggingRetryPolicy(new FixedRetryPolicy(config.readRetries))
+  private[akka] val writeRetryPolicy = new FixedRetryPolicy(config.writeRetries)
+  private[akka] val readRetryPolicy = new FixedRetryPolicy(config.readRetries)
   private[akka] val someReadRetryPolicy = Some(readRetryPolicy)
   private[akka] val someReadConsistency = Some(config.readConsistency)
 
@@ -313,7 +319,7 @@ class CassandraJournal(cfg: Config)
    * UUID generation is deliberately externalized to allow subclasses to customize the time based uuid for special cases.
    * see https://discuss.lightbend.com/t/akka-persistence-cassandra-events-by-tags-bucket-size-based-on-time-vs-burst-load/1411 and make sure you understand the risk of doing this wrong.
    */
-  protected def generateUUID(pr: PersistentRepr): UUID = UUIDs.timeBased()
+  protected def generateUUID(pr: PersistentRepr): UUID = Uuids.timeBased()
 
   private def extractTagWrites(serialized: Seq[SerializedAtomicWrite]): BulkTagWrite = {
     if (serialized.isEmpty) BulkTagWrite(Nil, Nil)
@@ -382,21 +388,21 @@ class CassandraJournal(cfg: Config)
         bs.setString("persistence_id", persistenceId)
         bs.setLong("partition_nr", maxPnr)
         bs.setLong("sequence_nr", m.sequenceNr)
-        bs.setUUID("timestamp", m.timeUuid)
+        bs.setUuid("timestamp", m.timeUuid)
         // Keeping as text for backward compatibility
         bs.setString("timebucket", m.timeBucket.key.toString)
         bs.setString("writer_uuid", m.writerUuid)
         bs.setInt("ser_id", m.serId)
         bs.setString("ser_manifest", m.serManifest)
         bs.setString("event_manifest", m.eventAdapterManifest)
-        bs.setBytes("event", m.serialized)
+        bs.setByteBuffer("event", m.serialized)
         bs.setSet("tags", m.tags.asJava, classOf[String])
 
         // meta data, if any
         m.meta.foreach(meta => {
           bs.setInt("meta_ser_id", meta.serId)
           bs.setString("meta_ser_manifest", meta.serManifest)
-          bs.setBytes("meta", meta.serialized)
+          bs.setByteBuffer("meta", meta.serialized)
         })
         bs
       }
@@ -645,7 +651,7 @@ class CassandraJournal(cfg: Config)
         .flatMap(session.selectOne)
         .map { rowOption =>
           rowOption.map { row =>
-            (row.getBool("used"), row.getLong("sequence_nr"))
+            (row.getBoolean("used"), row.getLong("sequence_nr"))
           }
         }
         .flatMap {
@@ -663,19 +669,18 @@ class CassandraJournal(cfg: Config)
   }
 
   private def executeBatch(body: BatchStatement => Unit, retryPolicy: RetryPolicy): Future[Unit] = {
-    val batch = new BatchStatement()
-      .setConsistencyLevel(writeConsistency)
-      .setRetryPolicy(retryPolicy)
-      .asInstanceOf[BatchStatement]
+    val batch = new DefaultBatchStatement().setConsistencyLevel(writeConsistency)
+//      .setRetryPolicy(retryPolicy)
+//      .asInstanceOf[BatchStatement]
     body(batch)
-    session.underlying().flatMap(_.executeAsync(batch).asScala).map(_ => ())
+    session.underlying().flatMap(_.executeAsync(batch).toScala).map(_ => ())
   }
 
   private def minSequenceNr(partitionNr: Long): Long =
     partitionNr * config.targetPartitionSize + 1
 
-  private def execute(stmt: Statement, retryPolicy: RetryPolicy): Future[Unit] = {
-    stmt.setConsistencyLevel(writeConsistency).setRetryPolicy(retryPolicy)
+  private def execute[S <: Statement[S]](stmt: S, retryPolicy: RetryPolicy): Future[Unit] = {
+    stmt.setConsistencyLevel(writeConsistency) //.setRetryPolicy(retryPolicy)
     session.executeWrite(stmt).map(_ => ())
   }
 
@@ -757,7 +762,7 @@ class CassandraJournal(cfg: Config)
 
         def meta: OptionVal[AnyRef] = {
           if (hasMetaColumns(row)) {
-            row.getBytes("meta") match {
+            row.getByteBuffer("meta") match {
               case null =>
                 OptionVal.None // no meta data
               case metaBytes =>
@@ -779,7 +784,7 @@ class CassandraJournal(cfg: Config)
           }
         }
 
-        val bytes = Bytes.getArray(row.getBytes("event"))
+        val bytes = Bytes.getArray(row.getByteBuffer("event"))
         val serId = row.getInt("ser_id")
         val manifest = row.getString("ser_manifest")
 
@@ -821,7 +826,7 @@ class CassandraJournal(cfg: Config)
  */
 class FixedRetryPolicy(number: Int) extends RetryPolicy {
   override def onUnavailable(
-      statement: Statement,
+      statement: Request,
       cl: ConsistencyLevel,
       requiredReplica: Int,
       aliveReplica: Int,
@@ -832,13 +837,13 @@ class FixedRetryPolicy(number: Int) extends RetryPolicy {
     // they're down), but still able to communicate with the client; in that case, retrying on the same host has almost
     // no chance of success, but moving to the next host might solve the issue.
     if (nbRetry == 0)
-      tryNextHost(cl, nbRetry) // see DefaultRetryPolicy
+      tryNextHost(nbRetry) // see DefaultRetryPolicy
     else
       retry(cl, nbRetry)
   }
 
   override def onWriteTimeout(
-      statement: Statement,
+      statement: Request,
       cl: ConsistencyLevel,
       writeType: WriteType,
       requiredAcks: Int,
@@ -848,7 +853,7 @@ class FixedRetryPolicy(number: Int) extends RetryPolicy {
   }
 
   override def onReadTimeout(
-      statement: Statement,
+      statement: Request,
       cl: ConsistencyLevel,
       requiredResponses: Int,
       receivedResponses: Int,
@@ -856,24 +861,22 @@ class FixedRetryPolicy(number: Int) extends RetryPolicy {
       nbRetry: Int): RetryDecision = {
     retry(cl, nbRetry)
   }
-  override def onRequestError(
-      statement: Statement,
-      cl: ConsistencyLevel,
-      cause: DriverException,
-      nbRetry: Int): RetryDecision = {
-    tryNextHost(cl, nbRetry)
-  }
+
+  override def onErrorResponse(request: Request, error: CoordinatorException, retryCount: Int): RetryDecision =
+    tryNextHost(retryCount)
+
+  override def onRequestAborted(request: Request, error: Throwable, retryCount: Int): RetryDecision =
+    tryNextHost(retryCount)
 
   private def retry(cl: ConsistencyLevel, nbRetry: Int): RetryDecision = {
-    if (nbRetry < number) RetryDecision.retry(cl) else RetryDecision.rethrow()
+    if (nbRetry < number) RetryDecision.RETRY_SAME else RetryDecision.RETHROW
   }
 
-  private def tryNextHost(cl: ConsistencyLevel, nbRetry: Int): RetryDecision = {
-    if (nbRetry < number) RetryDecision.tryNextHost(cl)
-    else RetryDecision.rethrow()
+  private def tryNextHost(nbRetry: Int): RetryDecision = {
+    if (nbRetry < number) RetryDecision.RETRY_NEXT
+    else RetryDecision.RETHROW
   }
 
-  override def init(c: Cluster): Unit = ()
   override def close(): Unit = ()
 
 }

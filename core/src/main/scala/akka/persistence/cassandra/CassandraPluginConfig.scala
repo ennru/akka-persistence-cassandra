@@ -5,7 +5,8 @@
 package akka.persistence.cassandra
 
 import akka.persistence.cassandra.compaction.CassandraCompactionStrategy
-import com.datastax.driver.core._
+import com.datastax.oss.driver.api.core.ConsistencyLevel
+//import com.datastax.driver.core._
 import com.typesafe.config.Config
 
 import akka.actor.ActorSystem

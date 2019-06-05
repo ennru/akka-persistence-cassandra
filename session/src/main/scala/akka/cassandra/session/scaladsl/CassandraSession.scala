@@ -59,7 +59,7 @@ final class CassandraSession(
     new JFunction[String, Future[PreparedStatement]] {
       override def apply(key: String): Future[PreparedStatement] =
         underlying().flatMap { s =>
-          val prepared = s.prepareAsync(key).toScala
+          val prepared = s.prepareAsync(SimpleStatement.builder(key).build()).toScala
           prepared.failed.foreach(
             _ =>
               // this is async, i.e. we are not updating the map from the compute function
@@ -228,7 +228,7 @@ final class CassandraSession(
    * The returned `Future` is completed when the statement has been
    * successfully executed, or if it fails.
    */
-  def executeWrite[S <: Statement[S]](stmt: S): Future[Done] = {
+  def executeWrite(stmt: Statement[_ <: Statement[_]]): Future[Done] = {
     if (stmt.getConsistencyLevel == null)
       stmt.setConsistencyLevel(writeConsistency)
     underlying().flatMap { s =>
@@ -259,11 +259,19 @@ final class CassandraSession(
   /**
    * INTERNAL API
    */
-  @InternalApi private[akka] def selectResultSet[S <: Statement[S]](stmt: S): Future[AsyncResultSet] = {
+  @InternalApi private[akka] def selectResultSet(stmt: Statement[_ <: Statement[_]]): Future[AsyncResultSet] = {
     if (stmt.getConsistencyLevel == null)
       stmt.setConsistencyLevel(settings.readConsistency)
     underlying().flatMap { s =>
       s.executeAsync(stmt).toScala
+    }
+  }
+
+  @InternalApi private[akka] def selectSyncResultSet(stmt: Statement[_ <: Statement[_]]): Future[ResultSet] = {
+    if (stmt.getConsistencyLevel == null)
+      stmt.setConsistencyLevel(settings.readConsistency)
+    underlying().map { s =>
+      s.execute(stmt)
     }
   }
 
@@ -353,7 +361,7 @@ final class CassandraSession(
    * The returned `Future` is completed with the first row,
    * if any.
    */
-  def selectOne[S <: Statement[S]](stmt: S): Future[Option[Row]] = {
+  def selectOne(stmt: Statement[_ <: Statement[_]]): Future[Option[Row]] = {
     if (stmt.getConsistencyLevel == null)
       stmt.setConsistencyLevel(readConsistency)
 
