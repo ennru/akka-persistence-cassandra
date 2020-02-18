@@ -76,7 +76,7 @@ object CassandraFlow {
       session: CassandraSession,
       writeSettings: CassandraWriteSettings,
       cqlStatement: String,
-      statementBinder: (T, PreparedStatement) => BoundStatement,
+      statementBinder: akka.japi.Function2[T, PreparedStatement, BoundStatement],
       partitionKey: akka.japi.Function[T, K]): Flow[T, T, NotUsed] = {
     scaladsl.CassandraFlow
       .createUnloggedBatch(

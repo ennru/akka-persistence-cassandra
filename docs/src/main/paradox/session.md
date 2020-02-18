@@ -69,6 +69,8 @@ Here we used a basic sink to complete the stream by collecting all of the stream
 
 @apidoc[CassandraFlow] provides factory methods to get Akka Streams flows to run CQL updated statements. Alpakka Cassandra creates a `PreparedStatement` and for every stream element the `statementBinder` function binds the CQL placeholders to data.
 
+The @apidoc[CassandraWriteSettings] allow to set a write parallelism. Be aware that a value other then `1` may lead to unordered writes to Cassandra.
+
 The incoming elements are emitted unchanged for further processing. 
 
 Scala
@@ -85,6 +87,19 @@ Scala
 
 Java
 : @@snip [snip](/session/src/test/java/docs/javadsl/CassandraFlowTest.java) { #withContext }
+
+
+### Updating with unlogged batches
+
+To achieve a higher write performance when writing many elements that share the same Cassandra partition key, you may use `createUnloggedBatch` which groups the stream elements with the partition function and writes those as @extref:[unlogged batches](cassandra:/cql/dml.html?highlight=batch#unlogged-batches) to Cassandra.
+
+The @apidoc[CassandraWriteSettings] control how many elements will be collected before those are split into batches per partition key.
+
+Scala
+: @@snip [snip](/session/src/test/scala/docs/scaladsl/CassandraFlowSpec.scala) { #unloggedBatch }
+
+Java
+: @@snip [snip](/session/src/test/java/docs/javadsl/CassandraFlowTest.java) { #unloggedBatch }
 
 
 ## Custom Session creation

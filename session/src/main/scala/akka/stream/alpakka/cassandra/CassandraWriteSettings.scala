@@ -45,7 +45,7 @@ class CassandraWriteSettings private (val parallelism: Int, val maxBatchSize: In
     "CassandraWriteSettings(" +
     s"parallelism=$parallelism," +
     s"maxBatchSize=$maxBatchSize," +
-    s"maxBatchWait=$maxBatchWait)"
+    s"maxBatchWait=${maxBatchWait.toCoarsest})"
 
 }
 
@@ -53,5 +53,10 @@ object CassandraWriteSettings {
   val defaults: CassandraWriteSettings = new CassandraWriteSettings(1, 100, 500.millis)
 
   def create(): CassandraWriteSettings = defaults
+  def create(maxBatchSize: Int, maxBatchWait: java.time.Duration): CassandraWriteSettings =
+    apply(maxBatchSize, maxBatchWait.asScala)
+
   def apply(): CassandraWriteSettings = defaults
+  def apply(maxBatchSize: Int, maxBatchWait: FiniteDuration): CassandraWriteSettings =
+    new CassandraWriteSettings(1, maxBatchSize, maxBatchWait)
 }

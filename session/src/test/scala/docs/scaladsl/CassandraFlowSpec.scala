@@ -13,6 +13,7 @@ import akka.stream.testkit.scaladsl.StreamTestKit.assertAllStagesStopped
 
 import scala.collection.immutable
 import scala.concurrent.Future
+import scala.concurrent.duration._
 
 class CassandraFlowSpec extends CassandraSpecBase(ActorSystem("CassandraFlowSpec")) {
 
@@ -161,12 +162,14 @@ class CassandraFlowSpec extends CassandraSpecBase(ActorSystem("CassandraFlowSpec
       val persons =
         immutable.Seq(Person(12, "John", "London"), Person(43, "Umberto", "Roma"), Person(56, "James", "Chicago"))
       val written = Source(persons)
+      // #unloggedBatch
         .via(CassandraFlow.createUnloggedBatch(
-          CassandraWriteSettings.defaults,
+          CassandraWriteSettings(maxBatchSize = 100, maxBatchWait = 500.millis),
           s"INSERT INTO $table(id, name, city) VALUES (?, ?, ?)",
           statementBinder = (person, preparedStatement) =>
             preparedStatement.bind(Int.box(person.id), person.name, person.city),
           partitionKey = person => person.id))
+        // #unloggedBatch
         .runWith(Sink.ignore)
       written.futureValue mustBe Done
 

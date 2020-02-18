@@ -7,7 +7,6 @@ package docs.javadsl;
 import akka.Done;
 // #prepared
 import akka.NotUsed;
-import akka.japi.Function2;
 import akka.japi.Pair;
 import akka.stream.Materializer;
 import akka.stream.alpakka.cassandra.CassandraWriteSettings;
@@ -25,6 +24,7 @@ import org.junit.AfterClass;
 import org.junit.BeforeClass;
 import org.junit.Test;
 
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -95,7 +95,7 @@ public class CassandraFlowTest {
                 new Person(56, "James", "Chicago")
         );
 
-        Function2<Person, PreparedStatement, BoundStatement> statementBinder =
+        akka.japi.Function2<Person, PreparedStatement, BoundStatement> statementBinder =
                 (person, preparedStatement) -> preparedStatement.bind(person.id, person.name, person.city);
 
         CompletionStage<List<Person>> written = Source.from(persons)
@@ -153,6 +153,45 @@ public class CassandraFlowTest {
                 .runWith(Sink.seq(), materializer);
         List<Person> rows = await(select);
         assertThat(new ArrayList<>(rows), hasItems(persons.stream().map(p -> p.first()).toArray()));
+    }
+
+    @Test
+    public void allowUnloggedBatches() throws InterruptedException, ExecutionException, TimeoutException {
+        String table = helper.createTableName();
+        await(cassandraAccess.withSchemaMetadataDisabled(() -> cassandraAccess.lifecycleSession().executeDDL("CREATE TABLE IF NOT EXISTS " + table + " (id int PRIMARY KEY, name text, city text);")));
+
+        List<Person> persons = Arrays.asList(
+                new Person(12, "John", "London"),
+                new Person(43, "Umberto", "Roma"),
+                new Person(56, "James", "Chicago")
+        );
+
+        Source<Person, NotUsed> from =Source.from(persons);
+        // #unloggedBatch
+        akka.japi.Function<Person, Integer> partitionKey = (person) -> person.id;
+        akka.japi.Function2<Person, PreparedStatement, BoundStatement> statementBinder =
+                (person, preparedStatement) -> preparedStatement.bind(person.id, person.name, person.city);
+
+        // #unloggedBatch
+        CompletionStage<Done> written = from
+        // #unloggedBatch
+                .via(CassandraFlow.createUnloggedBatch(
+                        cassandraSession,
+                        CassandraWriteSettings.create(100, Duration.ofMillis(500)),
+                        "INSERT INTO " + table + "(id, name, city) VALUES (?, ?, ?)",
+                        statementBinder,
+                        partitionKey
+                ))
+                // #unloggedBatch
+                .runWith(Sink.ignore(), materializer);
+
+        assertThat(await(written), is(Done.done()));
+
+        CompletionStage<List<Person>> select = CassandraSource.create(cassandraSession, "SELECT * FROM " + table)
+                .map(row -> new Person(row.getInt("id"), row.getString("name"), row.getString("city")))
+                .runWith(Sink.seq(), materializer);
+        List<Person> rows = await(select);
+        assertThat(new ArrayList<>(rows), hasItems(persons.toArray()));
     }
 
     public static final class Person {
